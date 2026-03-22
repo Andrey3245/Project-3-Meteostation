@@ -135,7 +135,7 @@ if (radio.available()) {
 
 Если данные не поступают более 60 минут, срабатывает сброс:
 ```cpp
-if (lastReceiveTime > 0 && millis() - lastReceiveTime > 600000) {
+if (lastReceiveTime > 0 && millis() - lastReceiveTime > 3600000) {
   resetWirelessData();
   }
 ```
