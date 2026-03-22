@@ -1,1 +1,445 @@
-21d
+#define _LCD_TYPE 1  
+#include <LCD_1602_RUS_ALL.h>
+LCD_1602_RUS lcd(0x27, 16, 2);
+#include <Wire.h>     
+#include <iarduino_RTC.h> 
+iarduino_RTC watch(RTC_DS3231); 
+#include <Adafruit_BMP280.h>
+Adafruit_BMP280 bmp; 
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#define BUTTON_PIN 4
+byte red = 9, blue = 5, green = 6;
+byte r = 0, g = 0, b = 0;
+#include <Adafruit_AHTX0.h>
+Adafruit_AHTX0 aht;
+int rain, delta;
+double PP;
+double pres1_array[6];     
+unsigned long time_array[6];
+unsigned long sumX, sumY, sumX2, sumXY;
+float a;
+
+byte currentHour = 0, currentMinute = 0;
+float fotoresistor2;
+unsigned int screenTimes[] = {
+  13000,  // Экран 0: Время/дата - 13 секунд
+  7000,  // Экран 1: Датчики дома - 7 секунд  
+  7000   // Экран 2: Прогноз дождя - 7 секунд
+};
+unsigned long lcdtime = 0;
+int lcdnumber = 0; 
+unsigned long lasttime = 0; // Когда в последний раз меняли экран
+boolean flag = true; 
+byte homee[8] = {B00000, B00100, B01110, B11111, B11111, B01110, B01010, B01110};
+byte kap[8] = {0b00100, 0b00100, 0b01010, 0b01010, 0b10001, 0b10001, 0b10001, 0b01110};
+const char* rusDays[] = {"Вск", "Пнд", "Втр", "Срд", "Чтв", "Птн", "Сбт"};
+
+RF24 radio(0, 10);
+byte address[][6] = {"1Node", "2Node"};
+
+struct SensorData {    // Структура данных для приёма
+  char temperatureout;     // Температура в °C
+  char humidityout;        // Давление в hPa
+  uint32_t packetNumber; // Номер пакета
+  uint32_t timestamp;    // Временная метка
+  bool sensorOK;         // Флаг исправности датчика
+};
+SensorData rxData;
+unsigned long lastReceiveTime = 0;  // Время последнего приёма
+bool dataIsFresh = false;          // Флаг свежести данных
+
+char tempBufferout[5]; // Буферы для форматированного вывода
+char humidityBufferout[5];
+
+template <typename T> // Медианный фильтр
+class Median3 {
+public:
+    T filter(T val) {
+        if (++i >= 3) i = 0;
+        buf[i] = val;
+        return getMedian(buf[0], buf[1], buf[2]);
+    }
+    void init(T val) {
+        buf[0] = buf[1] = buf[2] = val;
+    }
+    static inline T getMedian(T a, T b, T c) {
+        return (a < b) ? ((b < c) ? b : ((c < a) ? a : c)) : ((a < c) ? a : ((c < b) ? b : c));
+    }
+
+private:
+    T buf[3] = {};
+    uint8_t i = 0;
+};
+
+Median3<int> med; // Экспоненциальный фильтр
+
+class ExpFilter {
+private:
+    float filtered = 0;
+    const float alpha = 0.1;  // Коэффициент сглаживания
+public:
+    float filter(float newValue) {
+        filtered = alpha * newValue + (1 - alpha) * filtered;
+        return filtered;
+    }
+    void init(float val) { filtered = val; }
+};
+ExpFilter expF;
+
+void setup() {
+    //Serial.begin(9600);
+    pinMode(A0, INPUT); // Пин подключения фоторезистора
+    pinMode(3, OUTPUT); // Пин подключения подсветки дисплея
+    TCCR2B = (TCCR2B & 0xF8) | 1;
+    digitalWrite(3, HIGH);
+    med.init(analogRead(0));  // Инициализация фильтра первым значением с датчика
+    pinMode(red, OUTPUT);
+    pinMode(blue, OUTPUT);
+    pinMode(green, OUTPUT);
+    pinMode(BUTTON_PIN, INPUT);
+    lcd.init();
+    lcd.backlight();
+    watch.begin(&Wire);
+   //watch.settime(__TIMESTAMP__); // Устанавливаем время компиляции скетча в первый раз
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    
+    
+    String devText1 = "Developed By"; // Первая строка - "Developed By"
+    for (int i = 0; i < devText1.length(); i++) {
+        char currentChar = devText1[i];
+        lcd.print(String(currentChar));  // Конвертируем char в String
+        delay(45);  // Скорость печати
+    }
+    lcd.setCursor(0, 1);
+    String devText2 = "Kovalev Andrey";
+    for (int i = 0; i < devText2.length(); i++) {
+        char currentChar = devText2[i];
+        lcd.print(String(currentChar));
+        delay(45);
+    }
+
+    delay(500);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Check sensors");
+    delay(800);
+    
+    lcd.setCursor(0, 1);
+    lcd.print("BMP: "); // Проверка BMP280
+    if (bmp.begin(0x77)) {
+        lcd.print("OK");
+    } else {
+        lcd.print("-");
+    }
+    delay(900);
+    
+    
+    lcd.setCursor(8, 1);
+    lcd.print("AHT: "); // Проверка AHT20
+    if (aht.begin()) {
+        lcd.print("OK");
+    } else {
+        lcd.print("-");
+    }
+       delay(900);
+    
+    // Анимация перехода к основному экрану
+    for (int i = 0; i < 3; i++) {
+        lcd.noDisplay();
+        delay(190);
+        lcd.display();
+        delay(190);
+    }
+    
+    lcd.clear();
+
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
+                    Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
+                    Adafruit_BMP280::SAMPLING_X4,    /* Pressure oversampling */
+                    Adafruit_BMP280::FILTER_X8,      /* Filtering. */
+                    Adafruit_BMP280::STANDBY_MS_1000); /* Standby time. */
+
+    nrffunction(); // Инициализация радио
+    resetWirelessData();   // Инициализация данных
+
+    PP = davlenie(); // Функция для расчета начальных значений давления
+    for (byte i = 0; i < 6; i++) {
+    pres1_array[i] = PP;  // Забить весь массив текущим давлением
+    time_array[i] = i;
+   digitalWrite(3, LOW);
+   }
+}
+
+void loop() {
+    int rawValue = analogRead(0); // Чтение сырого значения с фоторезистора
+    int filteredValue = med.filter(rawValue);  // Применение медианного фильтра 3-го порядка
+    float smoothValue = expF.filter(filteredValue); // Применение экспоненциального фильтра
+    int fotoresistor = map(smoothValue, 260, 1023, 0, 255); // Преобразование отфильтрованного значения
+    fotoresistor = constrain(fotoresistor, 0, 255);  
+    analogWrite(3, 255 - fotoresistor); // Управление подсветкой дисплея через ШИМ
+    fotoresistor2 = map(smoothValue, 0, 1000, 100, 10)/ 100.0; // Преобразовываем отфильтрованные значения с фоторезистора для ШИМ на светодиоды RGB
+    fotoresistor2 = constrain(fotoresistor2,  0.05, 0.99);
+
+    checkWirelessData();     // Проверка данных от беспроводного датчика
+    if (lastReceiveTime > 0 && millis() - lastReceiveTime > 60000) {    // Проверка потери связи (если данных нет более 60 секунд)
+        resetWirelessData();
+        lastReceiveTime = 0;
+    }
+
+     if (millis() - lasttime > 600000) {
+      lasttime = millis();
+      PP = davlenie(); 
+      for (byte i = 0; i < 5; i++) {
+      pres1_array[i] = pres1_array[i + 1];
+    }
+    pres1_array[5] = PP;  // Последний элемент массива теперь - новое давление
+    
+    // Расчёт линейной регрессии
+    sumX = 0;
+    sumY = 0;
+    sumX2 = 0;
+    sumXY = 0;
+    
+    for (byte i = 0; i < 6; i++) {
+      sumX += time_array[i];
+      sumY += (long)pres1_array[i];  // Приводим к long для расчётов
+      sumX2 += time_array[i] * time_array[i];
+      sumXY += (long)time_array[i] * pres1_array[i];
+    }
+    
+    a = (long)6 * sumXY;
+    a = a - (long)sumX * sumY;
+    a = (float)a / (6 * sumX2 - sumX * sumX);
+    
+    delta = a * 6;  // Расчёт изменения давления
+    rain = map(delta, -250, 250, 100, -100);
+     }
+
+     if(digitalRead(BUTTON_PIN) == 1) { // Смена дисплеев по нажатию сенсорной кнопки
+      delay(50);
+      if(digitalRead(BUTTON_PIN) == 1) {
+      lcdnumber = (lcdnumber + 1) % 3;
+        lcd.clear();
+        lcd.createChar(7, kap); 
+        lcd.createChar(6, homee);    
+        lcdtime = millis();
+        while(digitalRead(BUTTON_PIN) == 1);
+     }
+     }
+
+     sensors_event_t humidityin, tempin;
+     aht.getEvent(&humidityin, &tempin);
+    
+    if(millis()-lcdtime>screenTimes[lcdnumber]) { 
+        lcdnumber = (lcdnumber+1)%3; // Переключение дисплеев
+        lcdtime = millis();
+        lcd.clear();
+        lcd.createChar(7, kap); 
+        lcd.createChar(6, homee); 
+    }
+
+    switch(lcdnumber) {
+      case 0: {
+        lcd.setCursor(4, 0); // Экран 1: Время и дата
+        lcd.print(watch.gettime("H:i:s"));
+        
+        lcd.setCursor(1, 1);
+        lcd.print(watch.gettime("d.m.Y "));
+      
+        int wday = atoi(watch.gettime("w")); // Получаем номер дня (0-6)
+        lcd.print(rusDays[wday]);      
+     break; 
+      }
+
+    case 1: {
+        lcd.setCursor(1, 0); // Экран 2: Данные с датчиков
+        lcd.print("Дом");
+        lcd.write(6);
+        lcd.setCursor(7, 0);
+        lcd.print(tempin.temperature - 1, 0);
+        lcd.print("°C ");
+        lcd.write(7);
+        lcd.print(humidityin.relative_humidity,0);
+        lcd.print("%");
+        lcd.setCursor(0, 1);
+        lcd.print("Улица");
+        
+        // Выводим данные беспроводного датчика если они свежие
+        if (dataIsFresh && rxData.sensorOK) {
+            dtostrf(rxData.temperatureout, 3, 0, tempBufferout);
+            dtostrf(rxData.humidityout, 2, 0, humidityBufferout);
+            lcd.setCursor(6, 1);
+            lcd.print(tempBufferout);
+            lcd.setCursor(13, 1);
+            lcd.print(humidityBufferout);    
+        }
+
+              else {
+              lcd.setCursor(7, 1);
+              lcd.print(F("--"));
+              lcd.setCursor(13, 1);
+              lcd.print(F("--"));
+        }
+
+        lcd.setCursor(9, 1);
+        lcd.print("°C");
+        lcd.setCursor(12, 1);
+        lcd.write(7);
+        lcd.setCursor(15, 1);
+        lcd.print("%"); 
+     break;
+    }
+    case 2: {
+        lcd.setCursor(0, 0);
+        lcd.print("Вероятность");
+        lcd.setCursor(0, 1);
+        lcd.print("осадков:    ");
+        lcd.print(String(rain));
+        lcd.print("%");
+      }
+    }
+
+    currentHour = atoi(watch.gettime("H")); // Получаем значение текущего часа и минуты
+    currentMinute = atoi(watch.gettime("i"));
+    
+  if (currentHour >= 23 || currentHour < 8) { // Управление RGB светодиодами в зависимости от времени
+      night();
+    } 
+    else if (currentHour >= 8 && currentHour < 11) {
+      morning();
+    }
+    else if (currentHour >= 11 && currentHour < 17) {
+      dayy();
+    }
+    else if (currentHour >= 17 && currentHour < 20) {
+      zakat();
+    }
+    else if (currentHour >= 20 && currentHour < 22) {
+      zakatt();
+    }
+    
+    int newR = r * fotoresistor2; // Добавляем зависимость яркости каждого цвета от значения с фоторезистора
+    int newG = g * fotoresistor2;
+    int newB = b * fotoresistor2;
+   
+    newR = constrain(newR, 0, 255);  // Ограничиваем ШИМ
+    newG = constrain(newG, 0, 255);
+    newB = constrain(newB, 0, 255);
+    
+    setColor(newR, newG, newB);
+    delay(50); 
+    }
+
+// Функция для радио
+void nrffunction() { 
+    radio.begin();
+    radio.setAutoAck(true);           // Включить подтверждение
+    radio.setRetries(3, 10);          // 3*250мкс, 10 попыток
+    radio.enableAckPayload();
+    radio.setChannel(106);            // Канал 106 (0x6a = 106)
+    radio.setPALevel(RF24_PA_MAX);    // Максимальная мощность
+    radio.setDataRate(RF24_1MBPS);    // Скорость 1 Мбит/с
+    radio.setPayloadSize(sizeof(SensorData)); // Размер пакета
+    radio.powerUp();
+    radio.openReadingPipe(1, address[0]);
+    radio.startListening();               // Режим приёма
+}
+
+// Функция проверки данных от датчика с улицы
+void checkWirelessData() { 
+    if (radio.available()) {
+        radio.read(&rxData, sizeof(rxData));
+        lastReceiveTime = millis();
+        dataIsFresh = true;
+    }
+}
+
+// Функция сброса данных от датчика с улицы
+void resetWirelessData() { /
+    rxData.sensorOK = false;
+    rxData.temperatureout = -999.0;
+    rxData.humidityout = -999.0;
+    dataIsFresh = false;
+}
+
+// Управление ШИМ светодиодов 
+void setColor(int r, int g, int b) { 
+  analogWrite(red, r);
+  analogWrite(green, g);
+  analogWrite(blue, b);
+}
+
+// Ниже функции плавной смены цвета RGB светодиодов в зависимости от времени
+
+void night () { 
+  fotoresistor2 = 0.99;
+  r = 2; g = 0; b = 2;
+  } 
+  
+void morning () { float progress = (currentHour - 8 + (float)currentMinute / 60.0) / 3.0;
+      if (progress < 0.5) {
+      float subProgress = progress * 2.0; 
+      r = 255;                            
+      g = 80 + subProgress * 90;        
+      b = 0 + subProgress * 50;           
+  }
+      else {  
+      float subProgress = (progress - 0.5) * 2.0; 
+      r = 255 - subProgress * 170;        
+      g = 180 - subProgress * 50;        
+      b = 60 + subProgress * 195;         
+    }
+}
+void dayy () {  r = 85;
+   g = 130;  
+   b = 255; 
+   }
+   
+   void zakat() { 
+    float progress = ((currentHour - 17) * 60 + currentMinute)/180.0;
+      if (progress < 0.33) {
+      float subProgress = progress * 3.0; 
+      r = 70 + subProgress * 185;   
+      g = 130 + subProgress * 20;   
+      b = 255 - subProgress * 205;  
+  }
+      else if (progress < 0.66) {  
+       float subProgress = (progress - 0.33) * 3.0; 
+        r = 255;                      
+        g = 200 - subProgress * 100;   
+        b = 50 + subProgress * 100;    
+  }
+      else {
+        float subProgress = (progress - 0.66) * 3.0; // 0.0 → 1.0
+        r = 255;                     
+        g = 100 - subProgress * 100;   
+        b = 150 - subProgress * 140;   
+        }
+   }
+void zakatt() {
+   float progress = ((currentHour - 20) * 60 + currentMinute)/120.0;
+      if (progress < 0.5) {
+      float subProgress = progress * 2.0;    
+      r = 255 - subProgress * 220;  
+      g = 0;    
+      b = 9 - subProgress * 10;   
+      }
+      else {
+      float subProgress = (progress - 0.5) * 2.0;
+      r = 38 - subProgress * 35;    
+      g = 0;      
+      b = 0;      
+    }
+}
+double davlenie() { // Функция чтения и усреднения давления для прогноза дождя
+  double sumPres1 = 0;
+  for (byte i = 0; i < 10; i++) {
+    double pres1 = bmp.readPressure();
+    sumPres1 += pres1;
+   
+  }
+  return (sumPres1 / 10.0);
+}
