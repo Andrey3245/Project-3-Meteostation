@@ -1,1 +1,86 @@
-1w2w
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include <GyverBME280.h>
+GyverBME280 bme;
+#include <GyverPower.h>
+RF24 radio(9,10);
+byte address[][6] = {"1Node", "2Node"};
+
+struct SensorData { 
+  char temperatureout;
+  char humidityout;
+  unsigned long packetNumber;
+  unsigned long timestamp;
+  bool sensorOK;
+};
+SensorData txData;
+
+unsigned long packetCounter = 0;
+unsigned long lastSendTime = 0; 
+const unsigned long SEND_INTERVAL = 2000; // Время для отправки данных
+
+void setup() {
+    Serial.begin(9600);
+    // Настройка энергосбережения
+    power.autoCalibrate();
+    power.setSleepMode(POWERDOWN_SLEEP);
+    power.correctMillis(true);
+    power.hardwareDisable(PWR_ADC); // Отключаем АЦП
+    bme.setPressOversampling(MODULE_DISABLE);  // Отключаем снятие давления
+    bme.setMode(FORCED_MODE); // Принудительный режим работы для BME280
+
+  // Инициализация BMP180
+  if (bme.begin(0x76)) {
+    txData.sensorOK = true;
+  } else {
+    txData.sensorOK = false;
+  }
+
+  nrffunction(); // Инициализация радио
+}
+
+void loop() {
+  static unsigned long lastSend = 0;
+  if (millis() - lastSendTime >= SEND_INTERVAL) {
+    lastSendTime = millis();
+    
+    if (txData.sensorOK) {
+      bme.oneMeasurement(); // Будим датчик для проведения измерения
+      while (bme.isMeasuring()); // Ожидание завершения
+     txData.temperatureout = bme.readTemperature();
+     txData.packetNumber = packetCounter;
+     txData.timestamp = millis();
+     txData.humidityout = bme.readHumidity();
+    } else {
+      txData.temperatureout = 0.0; // Если датчик не работает, отправляем нули
+      txData.humidityout = 0.0;
+    }
+
+  // Отправляем данные
+      if (radio.write(&txData, sizeof(txData))) { 
+          delay(100);
+       radio.powerDown(); // Выключаем радио
+      power.sleepDelay(1800000); // В глубокий сон на 30 минут
+      }
+     else {
+     nrffunction(); // При ошибке переинициализируем радио
+    }
+    packetCounter++;
+  }
+  }   
+
+// Функция настройки радио
+void nrffunction() {
+  radio.begin();
+  radio.setAutoAck(true);
+  radio.setRetries(3, 10);
+  radio.enableAckPayload(); 
+  radio.setChannel(0x6a);
+  radio.setPALevel(RF24_PA_MAX);
+  radio.setDataRate(RF24_1MBPS);
+  radio.setPayloadSize(sizeof(SensorData));
+  radio.openWritingPipe(address[0]);
+  radio.powerUp();
+  radio.stopListening();
+}
