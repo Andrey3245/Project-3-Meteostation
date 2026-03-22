@@ -184,7 +184,7 @@ void loop() {
     fotoresistor2 = constrain(fotoresistor2,  0.05, 0.99);
 
     checkWirelessData();     // Проверка данных от беспроводного датчика
-    if (lastReceiveTime > 0 && millis() - lastReceiveTime > 60000) {    // Проверка потери связи (если данных нет более 60 секунд)
+    if (lastReceiveTime > 0 && millis() - lastReceiveTime > 3600000) {    // Проверка потери связи (если данных нет более 60 минут)
         resetWirelessData();
         lastReceiveTime = 0;
     }
@@ -374,7 +374,7 @@ void setColor(int r, int g, int b) {
 
 // Ниже функции плавной смены цвета RGB светодиодов в зависимости от времени
 
-void night () { 
+void night () {
   fotoresistor2 = 0.99;
   r = 2; g = 0; b = 2;
   } 
@@ -383,17 +383,17 @@ void morning () { float progress = (currentHour - 8 + (float)currentMinute / 60.
       if (progress < 0.5) {
       float subProgress = progress * 2.0; 
       r = 255;                            
-      g = 80 + subProgress * 90;        
-      b = 0 + subProgress * 50;           
+      g = 80 + subProgress * 100;        
+      b = 0 + subProgress * 50;            
   }
       else {  
       float subProgress = (progress - 0.5) * 2.0; 
-      r = 255 - subProgress * 170;        
+      r = 255 - subProgress * 180;        
       g = 180 - subProgress * 50;        
-      b = 60 + subProgress * 195;         
+      b = 50 + subProgress * 205;         
     }
 }
-void dayy () {  r = 85;
+void dayy () {  r = 75;
    g = 130;  
    b = 255; 
    }
@@ -402,36 +402,36 @@ void dayy () {  r = 85;
     float progress = ((currentHour - 17) * 60 + currentMinute)/180.0;
       if (progress < 0.33) {
       float subProgress = progress * 3.0; 
-      r = 70 + subProgress * 185;   
-      g = 130 + subProgress * 20;   
+      r = 75 + subProgress * 180;   
+      g = 130 - subProgress * 30;   
       b = 255 - subProgress * 205;  
   }
       else if (progress < 0.66) {  
        float subProgress = (progress - 0.33) * 3.0; 
         r = 255;                      
-        g = 200 - subProgress * 100;   
+        g = 100 - subProgress * 30;   
         b = 50 + subProgress * 100;    
   }
       else {
         float subProgress = (progress - 0.66) * 3.0; // 0.0 → 1.0
         r = 255;                     
-        g = 100 - subProgress * 100;   
-        b = 150 - subProgress * 140;   
+        g = 70 - subProgress * 70;   
+        b = 150 - subProgress * 148;   
         }
    }
 void zakatt() {
    float progress = ((currentHour - 20) * 60 + currentMinute)/120.0;
       if (progress < 0.5) {
       float subProgress = progress * 2.0;    
-      r = 255 - subProgress * 220;  
-      g = 0;    
-      b = 9 - subProgress * 10;   
+       r = 255 - subProgress * 150;  
+       g = 0;    
+       b = 0;   
       }
       else {
       float subProgress = (progress - 0.5) * 2.0;
-      r = 38 - subProgress * 35;    
+      r = 105 - subProgress * 100;    
       g = 0;      
-      b = 0;      
+      b = 0;       
     }
 }
 double davlenie() { // Функция чтения и усреднения давления для прогноза дождя
